@@ -2,7 +2,8 @@
 import React, { useState } from "react";
 import Link from "next/link";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const AGENT_BASE = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:8000";
 
 export default function AddProduct() {
   const [mode, setMode] = useState<"ai" | "manual">("ai");
@@ -25,7 +26,7 @@ export default function AddProduct() {
 
     // Call Python agent for natural language parsing
     try {
-      const res = await fetch("http://localhost:8000/agent/chat", {
+      const res = await fetch(`${AGENT_BASE}/agent/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

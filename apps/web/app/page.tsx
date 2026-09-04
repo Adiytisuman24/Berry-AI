@@ -1616,7 +1616,7 @@ export default function BerryApp() {
                 </div>
                 <div className="p-3.5 rounded-xl bg-dark-900 border border-white/5">
                   <div className="text-slate-500">Connected Merchant</div>
-                  <div className="font-bold text-white mt-1">AeroStride (Runner.co)</div>
+                  <div className="font-bold text-white mt-1">AeroStride (Berry Store)</div>
                 </div>
                 <div className="p-3.5 rounded-xl bg-dark-900 border border-white/5">
                   <div className="text-slate-500">Amount & Policy</div>

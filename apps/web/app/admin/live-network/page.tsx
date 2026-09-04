@@ -2,6 +2,9 @@
 
 import React, { useState, useEffect } from "react";
 
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+
 export default function AdminLiveNetwork() {
   const [nodes, setNodes] = useState([
     { id: "NODE-GO-01", service: "Go API Gateway", port: ":8080", status: "Healthy", ping: "4ms", qps: 142, uptime: "99.98%" },
@@ -20,7 +23,7 @@ export default function AdminLiveNetwork() {
 
   useEffect(() => {
     try {
-      const es = new EventSource("http://localhost:8080/api/v1/events/stream");
+      const es = new EventSource(`${API_BASE}/api/v1/events/stream`);
       es.onmessage = (e) => {
         try {
           const parsed = JSON.parse(e.data);

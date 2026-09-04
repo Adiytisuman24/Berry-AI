@@ -1,7 +1,7 @@
 "use client";
 import React, { useState, useEffect } from "react";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 export default function MerchantAnalytics() {
   const [metrics, setMetrics] = useState({ aigmv: 48420, aiOrders: 27, aov: 1794, upsellRevenue: 8420, growthPct: 23.8 });

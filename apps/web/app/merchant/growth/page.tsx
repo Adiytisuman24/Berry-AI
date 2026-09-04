@@ -1,7 +1,8 @@
 "use client";
 import React, { useState, useEffect } from "react";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+const AGENT_BASE = process.env.NEXT_PUBLIC_AGENT_URL || "http://localhost:8000";
 
 export default function GrowthWithBerry() {
   const [opportunities, setOpportunities] = useState<any[]>([]);
@@ -28,7 +29,7 @@ export default function GrowthWithBerry() {
     if (!askInput.trim()) return;
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/agent/chat", {
+      const res = await fetch(`${AGENT_BASE}/agent/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: `As Berry Growth Intelligence for a running store, answer this merchant question: ${askInput}` }),

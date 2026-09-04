@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -88,6 +88,24 @@ export default function MerchantLayout({ children }: { children: React.ReactNode
   const [messages, setMessages] = useState([
     { sender: "berry", text: "Hello! I'm your Berry Merchant Intelligence Agent. I'm actively monitoring your conversion rates and inventory levels." },
   ]);
+  const [storeInfo, setStoreInfo] = useState({ name: "Berry Store", status: "Catalog Synced", initial: "B" });
+
+  useEffect(() => {
+    const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
+    fetch(`${API_BASE}/api/v1/merchant/settings`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data) => {
+        if (data) {
+          const name = data.name || data.store_name || "Berry Store";
+          setStoreInfo({
+            name,
+            status: data.status || "Catalog Synced",
+            initial: name.charAt(0).toUpperCase(),
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSendChat = (e: React.FormEvent) => {
     e.preventDefault();
@@ -166,13 +184,13 @@ export default function MerchantLayout({ children }: { children: React.ReactNode
         {/* Store info */}
         <div className="border-t border-black/[0.06] px-4 py-3 flex items-center gap-3">
           <div className="w-8 h-8 rounded-full bg-[#5B4DFB] text-white text-xs font-black flex items-center justify-center">
-            R
+            {storeInfo.initial}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="text-xs font-bold text-black leading-tight truncate">Runner.co</div>
+            <div className="text-xs font-bold text-black leading-tight truncate">{storeInfo.name}</div>
             <div className="flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-              <span className="text-[10px] text-black/50 font-medium">Catalog Synced</span>
+              <span className="text-[10px] text-black/50 font-medium">{storeInfo.status}</span>
             </div>
           </div>
         </div>

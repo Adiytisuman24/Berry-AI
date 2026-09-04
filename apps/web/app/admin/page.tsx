@@ -3,10 +3,10 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 
-const API_BASE = "http://localhost:8080";
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8080";
 
 const RECENT_TXN = [
-  { id: "BRY-1042", customer: "Aarav S.", merchant: "Runner.co", amount: 6998, status: "Success", time: "2 mins ago" },
+  { id: "BRY-1042", customer: "Aarav S.", merchant: "Berry Store", amount: 6998, status: "Success", time: "2 mins ago" },
   { id: "BRY-1041", customer: "Riya M.", merchant: "UrbanFit", amount: 3499, status: "Success", time: "5 mins ago" },
   { id: "BRY-1040", customer: "Kunal P.", merchant: "TechStore", amount: 24999, status: "Success", time: "12 mins ago" },
   { id: "BRY-1039", customer: "Neha K.", merchant: "SneakerHub", amount: 5499, status: "Failed", time: "18 mins ago" },
@@ -14,7 +14,7 @@ const RECENT_TXN = [
 ];
 
 const MERCHANT_NETWORK = [
-  { name: "Runner.co", initial: "R", category: "Footwear & Sports", status: "Online", products: 124 },
+  { name: "Berry Store", initial: "B", category: "Footwear & Sports", status: "Online", products: 124 },
   { name: "UrbanFit", initial: "U", category: "Fashion & Lifestyle", status: "Online", products: 86 },
   { name: "TechStore", initial: "T", category: "Electronics", status: "Online", products: 54 },
   { name: "HomeKart", initial: "H", category: "Home & Living", status: "Online", products: 38 },
