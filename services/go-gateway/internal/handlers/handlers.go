@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"berry-gateway/internal/connectors"
 	"berry-gateway/internal/models"
 	"berry-gateway/internal/payment"
 	"berry-gateway/internal/policy"
@@ -97,6 +99,7 @@ func (h *Handler) AddProductHandler(w http.ResponseWriter, r *http.Request) {
 	category := body.Category
 	inventory := body.Inventory
 	desc := body.Description
+	brand := body.Brand
 
 	// Natural language extraction if prompt provided
 	if body.Prompt != "" && name == "" {
@@ -129,13 +132,16 @@ func (h *Handler) AddProductHandler(w http.ResponseWriter, r *http.Request) {
 	if inventory <= 0 {
 		inventory = 15
 	}
+	if brand == "" {
+		brand = "AeroStride"
+	}
 
 	newProd := models.Product{
 		ID:          fmt.Sprintf("prod-%d", time.Now().UnixNano()%100000),
 		Name:        name,
 		Price:       price,
 		Category:    category,
-		Brand:       "AeroStride",
+		Brand:       brand,
 		Rating:      4.9,
 		Description: desc,
 		Inventory:   inventory,
@@ -157,13 +163,37 @@ func (h *Handler) AddProductHandler(w http.ResponseWriter, r *http.Request) {
 
 	created := h.store.AddProduct(newProd)
 
+	// Trigger Amazon Marketplace connector to sync listing into connector_listings
+	go func() {
+		if h.store.GetPGDB() != nil {
+			amazonAdapter := connectors.NewAmazonMarketplaceAdapter(h.store.GetPGDB())
+			if listing, err := amazonAdapter.CreateListing(context.Background(), created); err == nil {
+				slog.Info("Product synced to Amazon channel",
+					"product", created.Name,
+					"listing_id", listing.ListingID,
+					"channel_sku", listing.ChannelSKU,
+				)
+				h.store.BroadcastEvent("CONNECTOR_SYNCED", map[string]interface{}{
+					"product_id":  created.ID,
+					"product":     created.Name,
+					"channel":     listing.Channel,
+					"listing_id":  listing.ListingID,
+					"channel_sku": listing.ChannelSKU,
+					"sync_status": listing.SyncStatus,
+				})
+			} else {
+				slog.Warn("Amazon connector sync failed", "error", err)
+			}
+		}
+	}()
+
 	// Add timeline event
 	h.store.AddTimelineEvent(models.TimelineEvent{
 		ID:        uuid.New().String(),
 		TimeStr:   time.Now().Format("15:04"),
 		Icon:      "store",
 		Title:     fmt.Sprintf("🏪 Merchant added '%s'", created.Name),
-		Subtitle:  fmt.Sprintf("AI Profile generated • Indexed for buyer discovery (₹%.0f)", created.Price),
+		Subtitle:  fmt.Sprintf("AI Profile generated • Indexed for buyer discovery • Amazon sync queued (₹%.0f)", created.Price),
 		Amount:    created.Price,
 		Status:    "info",
 		Timestamp: time.Now(),
@@ -201,37 +231,114 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	user := h.store.GetUserProfile()
 	products := h.store.GetProducts()
 
-	topOptions := []models.Product{}
-	for i, p := range products {
-		if i < 3 {
-			topOptions = append(topOptions, p)
+	if len(products) == 0 {
+		http.Error(w, "No products available in catalog", http.StatusServiceUnavailable)
+		return
+	}
+
+	// Build candidates from live DB products
+	type pyCandidate struct {
+		ID          string  `json:"id"`
+		Name        string  `json:"name"`
+		Price       float64 `json:"price"`
+		Category    string  `json:"category"`
+		Brand       string  `json:"brand"`
+		Rating      float64 `json:"rating"`
+		Description string  `json:"description"`
+		MatchScore  int     `json:"match_score"`
+		Reasoning   string  `json:"reasoning"`
+		ImageURL    string  `json:"image_url"`
+	}
+	var candidates []pyCandidate
+	for _, p := range products {
+		if p.Inventory > 0 {
+			candidates = append(candidates, pyCandidate{
+				ID: p.ID, Name: p.Name, Price: p.Price,
+				Category: p.Category, Brand: p.Brand, Rating: p.Rating,
+				Description: p.Description, MatchScore: 80, Reasoning: "Live catalog product.",
+				ImageURL: p.ImageURL,
+			})
 		}
 	}
 
-	selected := &products[0]
-	socks := h.store.GetProductByID("cross-socks-01")
+	// Call Python agent with real catalog
+	pyPayload, _ := json.Marshal(map[string]interface{}{
+		"query":        req.Message,
+		"products":     candidates,
+		"budget_limit": user.PurchasingBoundary.PerTransactionLimit,
+	})
 
-	// 2. Build Cart with Selected Product
+	type EvalResponse struct {
+		TotalEvaluated        int      `json:"total_evaluated"`
+		RecommendedProductID  string   `json:"recommended_product_id"`
+		RecommendationSummary string   `json:"recommendation_summary"`
+		ReasoningPoints       []string `json:"reasoning_points"`
+	}
+	var evalResp EvalResponse
+
+	// 3-second hard timeout — prevents OpenAI retry backoff from freezing chat UI
+	pyCtx, pyCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer pyCancel()
+	pyReq, _ := http.NewRequestWithContext(pyCtx, http.MethodPost, h.pyAgentURL+"/agent/evaluate", bytes.NewBuffer(pyPayload))
+	pyReq.Header.Set("Content-Type", "application/json")
+	pyResp, err := http.DefaultClient.Do(pyReq)
+	if err == nil && pyResp.StatusCode == http.StatusOK {
+		json.NewDecoder(pyResp.Body).Decode(&evalResp)
+	} else {
+		evalResp = EvalResponse{
+			TotalEvaluated:        len(candidates),
+			RecommendedProductID:  candidates[0].ID,
+			RecommendationSummary: candidates[0].Name + " is the strongest match based on your query.",
+		}
+	}
+
+	// Find the selected product from DB
+	var selected *models.Product
+	for i := range products {
+		if products[i].ID == evalResp.RecommendedProductID {
+			selected = &products[i]
+			break
+		}
+	}
+	if selected == nil {
+		selected = &products[0]
+	}
+
+	topOptions := products
+	if len(topOptions) > 3 {
+		topOptions = products[:3]
+	}
+
+	// Find a complementary accessory from DB (cross-sell)
+	var crossSell *models.Product
+	for i := range products {
+		p := &products[i]
+		if p.ID != selected.ID &&
+			!strings.EqualFold(p.Category, selected.Category) &&
+			p.Inventory > 0 &&
+			(selected.Price+p.Price) <= user.PurchasingBoundary.PerTransactionLimit {
+			crossSell = p
+			break
+		}
+	}
+
+	// Build Cart with Selected Product
 	cartID := fmt.Sprintf("cart_%s", uuid.New().String()[:8])
 	cart := models.Cart{
 		ID:     cartID,
 		UserID: user.ID,
 		Items: []models.CartItem{
-			{
-				Product:  *selected,
-				Quantity: 1,
-				IsAddon:  false,
-			},
+			{Product: *selected, Quantity: 1, IsAddon: false},
 		},
 		Subtotal: selected.Price,
 		Discount: 0,
 		Total:    selected.Price,
 	}
 
-	// 3. Evaluate Policy Engine
+	// Evaluate Policy Engine
 	decision := policy.CheckPolicy(cart.Total, selected.Category, user.PurchasingBoundary)
 
-	// 4. Create Transaction Record
+	// Create Transaction Record
 	txID := fmt.Sprintf("BRY-%d", 1000+time.Now().Nanosecond()%9000)
 	tx := &models.Transaction{
 		ID:           txID,
@@ -247,7 +354,7 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 				ID:        uuid.New().String(),
 				TimeStr:   time.Now().Format("15:04"),
 				Icon:      "brain",
-				Title:     fmt.Sprintf("Berry found %d matching options", 14),
+				Title:     fmt.Sprintf("Berry evaluated %d catalog products", evalResp.TotalEvaluated),
 				Subtitle:  fmt.Sprintf("Selected %s (₹%.0f) as optimal choice", selected.Name, selected.Price),
 				Amount:    0,
 				Status:    "info",
@@ -258,12 +365,12 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 	h.store.SaveTransaction(tx)
 
 	resp := ChatResponse{
-		Message:         fmt.Sprintf("I found 14 options across connected merchants. Based on your requirements, **%s** is the strongest match (94%% match score) because it is engineered for daily training and stays within your ₹%.0f purchase limit.", selected.Name, user.PurchasingBoundary.PerTransactionLimit),
+		Message:         fmt.Sprintf("I evaluated %d products from the live merchant catalog. %s", evalResp.TotalEvaluated, evalResp.RecommendationSummary),
 		Stage:           "CROSS_SELL",
-		TotalEvaluated:  14,
+		TotalEvaluated:  evalResp.TotalEvaluated,
 		TopOptions:      topOptions,
 		SelectedProduct: selected,
-		CrossSellItem:   socks,
+		CrossSellItem:   crossSell,
 		Transaction:     tx,
 		PolicyDecision:  &decision,
 	}
@@ -290,22 +397,44 @@ func (h *Handler) ToggleCrossSell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	products := h.store.GetProducts()
-	firstProd := products[0]
-	socks := h.store.GetProductByID("cross-socks-01")
-
-	items := []models.CartItem{
-		{Product: firstProd, Quantity: 1, IsAddon: false},
+	// Preserve the primary product already in the cart
+	var primaryItem *models.CartItem
+	for i := range tx.Cart.Items {
+		if !tx.Cart.Items[i].IsAddon {
+			primaryItem = &tx.Cart.Items[i]
+			break
+		}
 	}
-	total := firstProd.Price
+	if primaryItem == nil {
+		products := h.store.GetProducts()
+		if len(products) > 0 {
+			item := models.CartItem{Product: products[0], Quantity: 1, IsAddon: false}
+			primaryItem = &item
+		}
+	}
 
-	if req.IncludeSocks && socks != nil {
-		items = append(items, models.CartItem{
-			Product:  *socks,
-			Quantity: 1,
-			IsAddon:  true,
-		})
-		total += socks.Price
+	items := []models.CartItem{*primaryItem}
+	total := primaryItem.Product.Price
+
+	if req.IncludeSocks {
+		// Find a real accessory from DB (different category, fits budget)
+		products := h.store.GetProducts()
+		user := h.store.GetUserProfile()
+		for i := range products {
+			p := &products[i]
+			if p.ID != primaryItem.Product.ID &&
+				!strings.EqualFold(p.Category, primaryItem.Product.Category) &&
+				p.Inventory > 0 &&
+				(total+p.Price) <= user.PurchasingBoundary.PerTransactionLimit {
+				items = append(items, models.CartItem{
+					Product:  *p,
+					Quantity: 1,
+					IsAddon:  true,
+				})
+				total += p.Price
+				break
+			}
+		}
 	}
 
 	tx.Cart.Items = items
@@ -313,7 +442,7 @@ func (h *Handler) ToggleCrossSell(w http.ResponseWriter, r *http.Request) {
 	tx.Cart.Total = total
 
 	user := h.store.GetUserProfile()
-	decision := policy.CheckPolicy(tx.Cart.Total, firstProd.Category, user.PurchasingBoundary)
+	decision := policy.CheckPolicy(tx.Cart.Total, primaryItem.Product.Category, user.PurchasingBoundary)
 	tx.PolicyResult = decision
 
 	h.store.SaveTransaction(tx)

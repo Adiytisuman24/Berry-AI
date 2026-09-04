@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -33,13 +34,23 @@ func NewStore() *Store {
 	// 1. Connect to PostgreSQL
 	pg, err := db.ConnectPostgres()
 	if err != nil {
-		slog.Warn("Could not connect to PostgreSQL, fallback memory mode", "error", err)
+		if os.Getenv("BERRY_ALLOW_MEMORY_FALLBACK") == "true" {
+			slog.Warn("Could not connect to PostgreSQL, falling back to memory mode due to BERRY_ALLOW_MEMORY_FALLBACK=true", "error", err)
+		} else {
+			slog.Error("CRITICAL: Failed to connect to PostgreSQL. Halting startup. Set BERRY_ALLOW_MEMORY_FALLBACK=true to override.", "error", err)
+			panic(fmt.Sprintf("Database connection failed: %v", err))
+		}
 	}
 
 	// 2. Connect to Redis
 	redisBus, err := events.ConnectRedis()
 	if err != nil {
-		slog.Warn("Could not connect to Redis, local pubsub active", "error", err)
+		if os.Getenv("BERRY_ALLOW_MEMORY_FALLBACK") == "true" {
+			slog.Warn("Could not connect to Redis, local pubsub active", "error", err)
+		} else {
+			slog.Error("CRITICAL: Failed to connect to Redis. Halting startup. Set BERRY_ALLOW_MEMORY_FALLBACK=true to override.", "error", err)
+			panic(fmt.Sprintf("Redis connection failed: %v", err))
+		}
 	}
 
 	var dbConn *sql.DB
@@ -188,6 +199,14 @@ func (s *Store) startOutboxWorker() {
 		}
 		rows.Close()
 	}
+}
+
+// GetPGDB returns the underlying *sql.DB for direct connector use in handlers
+func (s *Store) GetPGDB() *sql.DB {
+	if s.PG != nil {
+		return s.PG.DB
+	}
+	return nil
 }
 
 func (s *Store) GetUserProfile() models.UserProfile {
@@ -437,9 +456,9 @@ func (s *Store) GetAdminStats() models.AdminNetworkStats {
 	stats.SystemStatus.Database = "POSTGRESQL_HEALTHY"
 	stats.SystemStatus.Redis = "REDIS_ACTIVE"
 
-	totalCustomers := 1
-	totalMerchants := 1
-	totalProducts := 4
+	totalCustomers := 0
+	totalMerchants := 0
+	totalProducts := 0
 	successfulTx := 0
 	totalGMV := 0.0
 

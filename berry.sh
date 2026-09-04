@@ -42,6 +42,14 @@ print_header() {
 
 start_services() {
   print_header
+
+  # Guard: free port 8080 if nginx is squatting on it
+  if lsof -nP -iTCP:8080 -sTCP:LISTEN 2>/dev/null | grep -q nginx; then
+    echo -e "\033[1;33m⚠️  nginx detected on :8080 — stopping it so Go Gateway can bind...\033[0m"
+    brew services stop nginx 2>/dev/null || nginx -s stop 2>/dev/null || pkill nginx 2>/dev/null
+    sleep 1
+  fi
+
   echo -e "\033[1;32m[1/4] Starting Rust Settlement Engine on port :8081...\033[0m"
   cd "$ROOT_DIR/services/rust-ledger"
   if [ -f "./target/release/rust-ledger" ]; then

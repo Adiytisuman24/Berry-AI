@@ -23,16 +23,52 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-openai_client = None
 
-if OPENAI_API_KEY and not OPENAI_API_KEY.startswith("sk-demo"):
+openai_client = None
+AI_MODEL = "deepseek-v4-flash"
+AI_PROVIDER = "none"
+
+# Try DeepSeek first (faster, no quota issues for this key)
+if DEEPSEEK_API_KEY:
     try:
-        from openai import OpenAI
-        openai_client = OpenAI(api_key=OPENAI_API_KEY)
-        logger.info("⚡ OpenAI Client successfully initialized with live API key!")
+        from openai import OpenAI as _OpenAI
+        _client = _OpenAI(
+            api_key=DEEPSEEK_API_KEY,
+            base_url="https://api.deepseek.com",
+            max_retries=0,
+            timeout=8.0,
+        )
+        # Quick validation
+        _client.models.list()
+        openai_client = _client
+        AI_MODEL = "deepseek-v4-flash"
+        AI_PROVIDER = "deepseek"
+        logger.info(f"🚀 DeepSeek AI client initialized! model={AI_MODEL}")
     except Exception as e:
-        logger.warning(f"Could not initialize OpenAI client: {e}")
+        err_str = str(e)
+        if "429" in err_str or "quota" in err_str or "credit" in err_str:
+            logger.warning(f"⚠️  DeepSeek quota issue: {e}")
+        else:
+            logger.warning(f"DeepSeek init failed, trying OpenAI: {e}")
+
+# Fallback to OpenAI if DeepSeek not available
+if openai_client is None and OPENAI_API_KEY and not OPENAI_API_KEY.startswith("sk-demo"):
+    try:
+        from openai import OpenAI as _OpenAI
+        _client = _OpenAI(api_key=OPENAI_API_KEY, max_retries=0, timeout=8.0)
+        _client.models.list()
+        openai_client = _client
+        AI_MODEL = "gpt-4o-mini"
+        AI_PROVIDER = "openai"
+        logger.info(f"⚡ OpenAI fallback client initialized! model={AI_MODEL}")
+    except Exception as e:
+        logger.warning(f"OpenAI also unavailable: {e}")
+
+if openai_client is None:
+    logger.warning("⚠️  No AI provider available — running in deterministic fallback mode")
+
 
 # ----------------- Data Models -----------------
 
@@ -132,12 +168,13 @@ class OpportunityItem(BaseModel):
 # ----------------- Endpoints -----------------
 
 @app.get("/health")
-def health():
+def health_check():
     return {
         "status": "healthy",
         "service": "berry-python-agent",
-        "openai_configured": bool(openai_client is not None),
-        "model": "gpt-4o-mini",
+        "ai_configured": bool(openai_client is not None),
+        "ai_provider": AI_PROVIDER,
+        "model": AI_MODEL,
     }
 
 @app.post("/agent/vision-intent", response_model=VisionIntentResponse)
@@ -191,7 +228,7 @@ def analyze_vision_intent(req: VisionAnalyzeRequest):
             ]
 
             response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=AI_MODEL,
                 messages=messages,
                 response_format={"type": "json_object"},
                 max_tokens=500
@@ -267,7 +304,7 @@ def parse_intent(req: IntentRequest):
             - confidence: float (0.0 to 1.0)
             """
             response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=AI_MODEL,
                 messages=[
                     {"role": "system", "content": "You are Berry AI intent extraction engine. Output valid JSON only."},
                     {"role": "user", "content": prompt}
@@ -319,60 +356,73 @@ def evaluate_products(req: EvaluationRequest):
 
     candidates = req.products
     if not candidates:
-        candidates = [
-            ProductCandidate(
-                id="prod-nimbus",
-                name="Nimbus Runner",
-                price=6499.0,
-                category="running shoes",
-                brand="AeroStride",
-                rating=4.9,
-                description="Engineered plush daily training shoe with dynamic responsive foam.",
-                match_score=94,
-                reasoning="Optimal balance of cushioning and stability for beginner runners within ₹7,000 limit.",
-                image_url="https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=600&auto=format&fit=crop&q=80",
-            ),
-            ProductCandidate(
-                id="prod-aeroflex",
-                name="AeroFlex Daily",
-                price=5999.0,
-                category="running shoes",
-                brand="Pulse",
-                rating=4.7,
-                description="Lightweight everyday road runner with reinforced breathable mesh.",
-                match_score=89,
-                reasoning="Great value lightweight trainer, slightly firmer ride than Nimbus Runner.",
-                image_url="https://images.unsplash.com/photo-1551107696-a4b0c5a0d9a2?w=600&auto=format&fit=crop&q=80",
-            ),
-            ProductCandidate(
-                id="prod-motionlite",
-                name="Motion Lite",
-                price=4899.0,
-                category="running shoes",
-                brand="Velocity",
-                rating=4.5,
-                description="Budget-friendly responsive cushioned shoe for light training.",
-                match_score=83,
-                reasoning="Solid budget option under ₹5,000 with essential shock absorption.",
-                image_url="https://images.unsplash.com/photo-1608231387042-66d1773070a5?w=600&auto=format&fit=crop&q=80",
-            ),
-        ]
+        raise HTTPException(status_code=400, detail="No products provided for evaluation")
 
+    # Filter by budget
+    affordable = [p for p in candidates if p.price <= req.budget_limit]
+    if not affordable:
+        affordable = candidates # fallback if none fit budget
+
+    top_picks = affordable[:3]
+    best_product = top_picks[0]
+
+    if openai_client:
+        try:
+            prod_json = json.dumps([p.dict() for p in affordable])
+            prompt = f"""
+            Evaluate these products for query: "{req.query}" with budget ₹{req.budget_limit}.
+            Products: {prod_json}
+            Pick the best product and explain why.
+            Output JSON:
+            - recommended_product_id: string
+            - recommendation_summary: string
+            - reasoning_points: list of 3-4 strings
+            """
+            response = openai_client.chat.completions.create(
+                model=AI_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are Berry AI ranking engine. Return valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            raw = json.loads(response.choices[0].message.content)
+            rec_id = raw.get("recommended_product_id", best_product.id)
+            # Ensure rec_id is in top_picks
+            found = next((p for p in affordable if p.id == rec_id), None)
+            if found:
+                best_product = found
+                # move to front
+                top_picks = [best_product] + [p for p in top_picks if p.id != rec_id][:2]
+            
+            return EvaluationResponse(
+                total_evaluated=len(candidates),
+                top_picks=top_picks,
+                recommended_product_id=best_product.id,
+                recommendation_summary=raw.get("recommendation_summary", f"{best_product.name} is the strongest match."),
+                reasoning_points=raw.get("reasoning_points", ["Matches criteria.", f"Fits budget ₹{req.budget_limit}."])
+            )
+        except Exception as e:
+            logger.warning(f"OpenAI evaluate error: {e}")
+
+    # Fallback response
     return EvaluationResponse(
-        total_evaluated=14,
-        top_picks=candidates[:3],
-        recommended_product_id=candidates[0].id,
-        recommendation_summary="Nimbus Runner is the strongest match because it's engineered for daily training and stays comfortably within your ₹7,000 purchase boundary.",
+        total_evaluated=len(candidates),
+        top_picks=top_picks,
+        recommended_product_id=best_product.id,
+        recommendation_summary=f"{best_product.name} is the strongest match because it fits your use case and stays within your ₹{req.budget_limit:,.0f} boundary.",
         reasoning_points=[
-            "Engineered specifically for beginner and daily training road use.",
-            "Stays strictly within authorized per-purchase boundary (₹6,499 vs ₹7,000).",
-            "High verified merchant inventory with 99.4% dispatch reliability.",
-            "High customer satisfaction rating (4.9/5 from 1,280 runners).",
+            f"Strong match for category {best_product.category}.",
+            f"Stays within authorized boundary (₹{best_product.price:,.0f} vs ₹{req.budget_limit:,.0f}).",
+            "Verified merchant inventory.",
         ],
     )
 
 @app.post("/agent/cross-sell", response_model=CrossSellItem)
 def get_cross_sell(req: CrossSellRequest):
+    logger.info(f"Cross-sell requested for {req.primary_product_name}")
+    # We will pass the cross-sell logic primarily back to Go, but if called, just return a generic matching accessory.
+    # In a real implementation this would evaluate the DB items passed in.
     item_price = 499.0
     fits = (req.current_cart_total + item_price) <= req.purchase_limit
 
@@ -382,7 +432,7 @@ def get_cross_sell(req: CrossSellRequest):
         price=item_price,
         category="accessories",
         attach_rate_pct=31,
-        pitch="Performance socks are frequently purchased with Nimbus Runner to prevent friction blisters during daily 5K runs.",
+        pitch=f"Frequently purchased with {req.primary_product_name} to enhance your experience.",
         can_fit_in_budget=fits,
     )
 
@@ -410,7 +460,7 @@ def parse_merchant_prompt(req: MerchantPromptRequest):
             - ai_readiness_summary: string
             """
             response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=AI_MODEL,
                 messages=[
                     {"role": "system", "content": "You are Berry AI Merchant Configuration Engine. Return valid JSON only."},
                     {"role": "user", "content": prompt}
