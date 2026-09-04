@@ -212,3 +212,7 @@ Catalog    Dashboard   Telemetry
 - `/admin/infrastructure` — CPU/Memory/Goroutine telemetry across all runtimes
 - `/admin/analytics` — Macro commerce growth and funnel velocity
 - `/admin/settings` — Gateway keys and global environment controls
+
+
+demo dashboard :
+<img width="1792" height="1120" alt="Screenshot 2026-09-04 at 18 10 45" src="https://github.com/user-attachments/assets/ab84dd9a-a5e9-442a-ace0-f17cbb5e073a" />
