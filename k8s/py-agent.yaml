@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: py-agent
+  namespace: berry-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: py-agent
+  template:
+    metadata:
+      labels:
+        app: py-agent
+    spec:
+      containers:
+        - name: py-agent
+          image: berry-ai/py-agent:latest
+          ports:
+            - containerPort: 8000
+          env:
+            - name: PORT
+              value: "8000"
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: openai-secrets
+                  key: api_key
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: py-agent-service
+  namespace: berry-ai
+spec:
+  selector:
+    app: py-agent
+  ports:
+    - protocol: TCP
+      port: 8000
+      targetPort: 8000

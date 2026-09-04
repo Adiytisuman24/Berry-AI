@@ -1,0 +1,74 @@
+version: '3.8'
+
+services:
+  # 1. Next.js Web Frontend
+  web:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.web
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8080
+      - NEXT_PUBLIC_RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-rzp_test_TXtd2CNmv3wGJZ}
+    depends_on:
+      - go-gateway
+
+  # 2. Go API Gateway & Policy Engine
+  go-gateway:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.go
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - RAZORPAY_KEY_ID=${RAZORPAY_KEY_ID:-rzp_test_TXtd2CNmv3wGJZ}
+      - RAZORPAY_KEY_SECRET=${RAZORPAY_KEY_SECRET:-i4e6AocDmJ76kdJU2OYxuhGM}
+      - RUST_LEDGER_URL=http://rust-ledger:8081
+      - PY_AGENT_URL=http://py-agent:8000
+    depends_on:
+      - rust-ledger
+      - py-agent
+
+  # 3. Rust Cryptographic Ledger & Passport Signer
+  rust-ledger:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.rust
+    ports:
+      - "8081:8081"
+    environment:
+      - PORT=8081
+
+  # 4. Python AI Reasoning Agent
+  py-agent:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.py
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+  # 5. PostgreSQL Financial Store
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=berry
+      - POSTGRES_PASSWORD=berrysecret
+      - POSTGRES_DB=berry_ai
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # 6. Redis Ephemeral State
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+volumes:
+  postgres_data:

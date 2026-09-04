@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-gateway
+  namespace: berry-ai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: go-gateway
+  template:
+    metadata:
+      labels:
+        app: go-gateway
+    spec:
+      containers:
+        - name: go-gateway
+          image: berry-ai/go-gateway:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PORT
+              value: "8080"
+            - name: RAZORPAY_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: razorpay-secrets
+                  key: key_id
+            - name: RAZORPAY_KEY_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: razorpay-secrets
+                  key: key_secret
+            - name: RUST_LEDGER_URL
+              value: "http://rust-ledger-service:8081"
+            - name: PY_AGENT_URL
+              value: "http://py-agent-service:8000"
+          resources:
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: go-gateway-service
+  namespace: berry-ai
+spec:
+  selector:
+    app: go-gateway
+  ports:
+    - protocol: TCP
+      port: 8080
+      targetPort: 8080
